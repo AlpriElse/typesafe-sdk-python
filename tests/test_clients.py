@@ -178,63 +178,60 @@ async def test_non_finite_numbers_are_stringified(clients: ClientFactory) -> Non
     )
 
 
-@pytest.mark.parametrize(
-    ("model", "expected"),
-    [
-        pytest.param(
-            Noul(instructions={"task": "Is the reading out of range?", "reading": float("nan")}),
-            {"type": "noul", "instructions": {"task": "Is the reading out of range?", "reading": "NaN"}},
-            id="noul",
-        ),
-        pytest.param(
-            Choice(
-                instructions="Which refund tier applies?",
-                criteria={"vip": {"max_refund": float("inf")}, "standard": {"max_refund": 50}},
-            ),
-            {
-                "type": "choice",
-                "instructions": "Which refund tier applies?",
-                "criteria": {"vip": {"max_refund": "Infinity"}, "standard": {"max_refund": 50}},
-            },
-            id="choice",
-        ),
-        pytest.param(
-            # A rubric whose top band has no upper limit; `null` would read as "unknown", not "unbounded".
-            Score(
-                instructions="How late was the delivery?",
-                criteria=[{"max_days_late": 0}, {"max_days_late": 3}, {"max_days_late": float("inf")}],
-            ),
-            {
-                "type": "score",
-                "instructions": "How late was the delivery?",
-                "criteria": [{"max_days_late": 0}, {"max_days_late": 3}, {"max_days_late": "Infinity"}],
-            },
-            id="score",
-        ),
-        pytest.param(
-            Box(instructions={"target": "the dent", "min_area": float("-inf")}),
-            {"type": "box", "instructions": {"target": "the dent", "min_area": "-Infinity"}},
-            id="box",
-        ),
-    ],
-)
-async def test_non_finite_numbers_in_question_models_are_stringified(
-    clients: ClientFactory, model: Noul | Choice | Score | Box, expected: dict[str, Any]
-) -> None:
-    # The same question as a model and as a dictionary must be sent identically, with
-    # non-finite numbers stringified as they are in `state` and dictionary questions.
+async def sent_as_model_and_dict(clients: ClientFactory, question: Noul | Choice | Score | Box) -> tuple[Any, Any]:
+    """Send `question` as a model and as the equivalent dictionary in one request; return both as sent."""
+    sent: list[Any] = []
+
     def handler(request: httpx2.Request) -> httpx2.Response:
-        body = from_json(request.content, allow_inf_nan=False)
-        assert body["questions"]["as_dict"] == expected
-        assert body["questions"]["as_model"] == expected
+        sent.append(from_json(request.content, allow_inf_nan=False)["questions"])
         return httpx2.Response(200, content=to_json(RESULT))
 
-    await system_one(
-        clients(handler),
-        state="x",
-        # `model_dump()` keeps the raw floats, so the dictionary carries the same NaN/Infinity values.
-        questions=cast(Questions, {"as_model": model, "as_dict": model.model_dump()}),
+    # `model_dump()` keeps the raw floats, so the dictionary carries the same NaN/Infinity values.
+    await system_one(clients(handler), state="x", questions=cast(Questions, {"model": question, "dict": question.model_dump()}))
+    return sent[0]["model"], sent[0]["dict"]
+
+
+async def test_noul_model_sends_nan_as_a_string(clients: ClientFactory) -> None:
+    question = Noul(instructions={"task": "Is the reading out of range?", "reading": float("nan")})
+
+    as_model, as_dict = await sent_as_model_and_dict(clients, question)
+
+    assert as_model["instructions"]["reading"] == "NaN"
+    assert as_model == as_dict
+
+
+async def test_choice_model_sends_infinity_as_a_string(clients: ClientFactory) -> None:
+    question = Choice(
+        instructions="Which refund tier applies?",
+        criteria={"vip": {"max_refund": float("inf")}, "standard": {"max_refund": 50}},
     )
+
+    as_model, as_dict = await sent_as_model_and_dict(clients, question)
+
+    assert as_model["criteria"]["vip"]["max_refund"] == "Infinity"
+    assert as_model == as_dict
+
+
+async def test_score_model_sends_infinity_as_a_string(clients: ClientFactory) -> None:
+    # The top band has no upper limit. Sent as `null`, it would read as "unknown", not "unbounded".
+    question = Score(
+        instructions="How late was the delivery?",
+        criteria=[{"max_days_late": 0}, {"max_days_late": 3}, {"max_days_late": float("inf")}],
+    )
+
+    as_model, as_dict = await sent_as_model_and_dict(clients, question)
+
+    assert as_model["criteria"][2]["max_days_late"] == "Infinity"
+    assert as_model == as_dict
+
+
+async def test_box_model_sends_negative_infinity_as_a_string(clients: ClientFactory) -> None:
+    question = Box(instructions={"target": "the dent", "min_area": float("-inf")})
+
+    as_model, as_dict = await sent_as_model_and_dict(clients, question)
+
+    assert as_model["instructions"]["min_area"] == "-Infinity"
+    assert as_model == as_dict
 
 
 async def test_raw_question_passthrough(clients: ClientFactory) -> None:
