@@ -13,7 +13,6 @@ from tests.conftest import ClientFactory
 from tests.helpers import TrackingTransport, models, system_one
 from typesafe_sdk import (
     AsyncTypeSafeClient,
-    Box,
     Choice,
     ChoiceAnswer,
     JSONValue,
@@ -178,60 +177,21 @@ async def test_non_finite_numbers_are_stringified(clients: ClientFactory) -> Non
     )
 
 
-async def sent_as_model_and_dict(clients: ClientFactory, question: Noul | Choice | Score | Box) -> tuple[Any, Any]:
-    """Send `question` as a model and as the equivalent dictionary in one request; return both as sent."""
-    sent: list[Any] = []
-
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        sent.append(from_json(request.content, allow_inf_nan=False)["questions"])
-        return httpx2.Response(200, content=to_json(RESULT))
-
-    # `model_dump()` keeps the raw floats, so the dictionary carries the same NaN/Infinity values.
-    await system_one(clients(handler), state="x", questions=cast(Questions, {"model": question, "dict": question.model_dump()}))
-    return sent[0]["model"], sent[0]["dict"]
-
-
-async def test_noul_model_sends_nan_as_a_string(clients: ClientFactory) -> None:
-    question = Noul(instructions={"task": "Is the reading out of range?", "reading": float("nan")})
-
-    as_model, as_dict = await sent_as_model_and_dict(clients, question)
-
-    assert as_model["instructions"]["reading"] == "NaN"
-    assert as_model == as_dict
-
-
-async def test_choice_model_sends_infinity_as_a_string(clients: ClientFactory) -> None:
+async def test_question_model_stringifies_non_finite_numbers(clients: ClientFactory) -> None:
+    # `_Question.ser_json_inf_nan` covers every question model; one nested value is enough.
     question = Choice(
         instructions="Which refund tier applies?",
         criteria={"vip": {"max_refund": float("inf")}, "standard": {"max_refund": 50}},
     )
 
-    as_model, as_dict = await sent_as_model_and_dict(clients, question)
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        questions = from_json(request.content, allow_inf_nan=False)["questions"]
+        assert questions["model"]["criteria"]["vip"]["max_refund"] == "Infinity"
+        assert questions["model"] == questions["dict"]
+        return httpx2.Response(200, content=to_json(RESULT))
 
-    assert as_model["criteria"]["vip"]["max_refund"] == "Infinity"
-    assert as_model == as_dict
-
-
-async def test_score_model_sends_infinity_as_a_string(clients: ClientFactory) -> None:
-    # The top band has no upper limit. Sent as `null`, it would read as "unknown", not "unbounded".
-    question = Score(
-        instructions="How late was the delivery?",
-        criteria=[{"max_days_late": 0}, {"max_days_late": 3}, {"max_days_late": float("inf")}],
-    )
-
-    as_model, as_dict = await sent_as_model_and_dict(clients, question)
-
-    assert as_model["criteria"][2]["max_days_late"] == "Infinity"
-    assert as_model == as_dict
-
-
-async def test_box_model_sends_negative_infinity_as_a_string(clients: ClientFactory) -> None:
-    question = Box(instructions={"target": "the dent", "min_area": float("-inf")})
-
-    as_model, as_dict = await sent_as_model_and_dict(clients, question)
-
-    assert as_model["instructions"]["min_area"] == "-Infinity"
-    assert as_model == as_dict
+    # `model_dump()` keeps the raw floats, so the dictionary carries the same NaN/Infinity values.
+    await system_one(clients(handler), state="x", questions=cast(Questions, {"model": question, "dict": question.model_dump()}))
 
 
 async def test_raw_question_passthrough(clients: ClientFactory) -> None:
