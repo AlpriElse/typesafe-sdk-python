@@ -13,6 +13,7 @@ from tests.conftest import ClientFactory
 from tests.helpers import TrackingTransport, models, system_one
 from typesafe_sdk import (
     AsyncTypeSafeClient,
+    Box,
     Choice,
     ChoiceAnswer,
     JSONValue,
@@ -174,6 +175,65 @@ async def test_non_finite_numbers_are_stringified(clients: ClientFactory) -> Non
         state={"value": float("nan"), "arr": [1.0, float("inf"), float("-inf")]},
         questions={"q": {"type": "noul", "instructions": "?"}},
         extra_body={"temperature": float("nan")},
+    )
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        pytest.param(
+            Noul(instructions={"task": "Is the reading out of range?", "reading": float("nan")}),
+            {"type": "noul", "instructions": {"task": "Is the reading out of range?", "reading": "NaN"}},
+            id="noul",
+        ),
+        pytest.param(
+            Choice(
+                instructions="Which refund tier applies?",
+                criteria={"vip": {"max_refund": float("inf")}, "standard": {"max_refund": 50}},
+            ),
+            {
+                "type": "choice",
+                "instructions": "Which refund tier applies?",
+                "criteria": {"vip": {"max_refund": "Infinity"}, "standard": {"max_refund": 50}},
+            },
+            id="choice",
+        ),
+        pytest.param(
+            # A rubric whose top band has no upper limit; `null` would read as "unknown", not "unbounded".
+            Score(
+                instructions="How late was the delivery?",
+                criteria=[{"max_days_late": 0}, {"max_days_late": 3}, {"max_days_late": float("inf")}],
+            ),
+            {
+                "type": "score",
+                "instructions": "How late was the delivery?",
+                "criteria": [{"max_days_late": 0}, {"max_days_late": 3}, {"max_days_late": "Infinity"}],
+            },
+            id="score",
+        ),
+        pytest.param(
+            Box(instructions={"target": "the dent", "min_area": float("-inf")}),
+            {"type": "box", "instructions": {"target": "the dent", "min_area": "-Infinity"}},
+            id="box",
+        ),
+    ],
+)
+async def test_non_finite_numbers_in_question_models_are_stringified(
+    clients: ClientFactory, model: Noul | Choice | Score | Box, expected: dict[str, Any]
+) -> None:
+    # The same question as a model and as a dictionary must be sent identically, with
+    # non-finite numbers stringified as they are in `state` and dictionary questions.
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = from_json(request.content, allow_inf_nan=False)
+        assert body["questions"]["as_dict"] == expected
+        assert body["questions"]["as_model"] == expected
+        return httpx2.Response(200, content=to_json(RESULT))
+
+    await system_one(
+        clients(handler),
+        state="x",
+        # `model_dump()` keeps the raw floats, so the dictionary carries the same NaN/Infinity values.
+        questions=cast(Questions, {"as_model": model, "as_dict": model.model_dump()}),
     )
 
 

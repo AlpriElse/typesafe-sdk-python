@@ -83,7 +83,7 @@ class BoxModel(TypedDict, closed=True):
 class _Question(BaseModel):
     """Reject unknown fields and omit optional fields left at their default from the wire form."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", ser_json_inf_nan="strings")
 
     @model_serializer(mode="wrap")
     def _omit_none(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
